@@ -4,7 +4,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from config import LabConfig, load_config
-from memory_store import estimate_tokens
+from memory_store import (
+    estimate_tokens,
+    extract_profile_updates,
+    render_profile_answer,
+    requested_profile_keys,
+)
 from model_provider import build_chat_model
 
 
@@ -16,60 +21,116 @@ class SessionState:
 
 
 class BaselineAgent:
-    """Student TODO: implement Agent A.
-
-    Requirements:
-    - Within-session memory only
-    - No persistent `User.md`
-    - Should forget long-term facts across new threads
-    """
+    """Agent A: full within-thread history with no persistent memory."""
 
     def __init__(self, config: LabConfig | None = None, force_offline: bool = False) -> None:
         self.config = config or load_config()
         self.force_offline = force_offline
         self.sessions: dict[str, SessionState] = {}
-
-        # TODO: optionally initialize a real LangChain/LangGraph agent when dependencies exist.
-        self.langchain_agent = None
+        self.langchain_agent = None if force_offline else self._maybe_build_langchain_agent()
 
     def reply(self, user_id: str, thread_id: str, message: str) -> dict[str, Any]:
-        """Student TODO: return the agent response and token accounting.
+        """Reply using a real model when configured, otherwise deterministic offline mode."""
 
-        Pseudocode:
-        - If a live agent exists, call the live path.
-        - Otherwise use a deterministic offline path.
-        """
-
-        raise NotImplementedError
+        del user_id  # Baseline deliberately does not share state by user.
+        if self.langchain_agent is not None:
+            return self._reply_live(thread_id, message)
+        return self._reply_offline(thread_id, message)
 
     def token_usage(self, thread_id: str) -> int:
-        # TODO: return cumulative agent token count for one thread.
-        raise NotImplementedError
+        return self.sessions.get(thread_id, SessionState()).token_usage
 
     def prompt_token_usage(self, thread_id: str) -> int:
-        # TODO: estimate how much prompt context this baseline kept processing.
-        raise NotImplementedError
+        return self.sessions.get(thread_id, SessionState()).prompt_tokens_processed
 
     def compaction_count(self, thread_id: str) -> int:
         # Baseline has no compact memory.
         return 0
 
     def _reply_offline(self, thread_id: str, message: str) -> dict[str, Any]:
-        """Student TODO: implement a simple offline behavior.
+        """Use only facts present in this thread to create a stable response."""
 
-        Suggested behavior:
-        - Store the new user message in the session
-        - Generate a short deterministic reply
-        - Update token counts
-        - Never remember facts across different thread ids
-        """
+        session = self.sessions.setdefault(thread_id, SessionState())
+        session.messages.append({"role": "user", "content": message})
+        prompt_tokens = _message_tokens(session.messages)
+        session.prompt_tokens_processed += prompt_tokens
 
-        raise NotImplementedError
+        requested = requested_profile_keys(message)
+        if requested:
+            response = render_profile_answer(_session_facts(session.messages), requested)
+        else:
+            response = "Đã ghi nhận trong thread hiện tại."
+
+        response_tokens = estimate_tokens(response)
+        session.messages.append({"role": "assistant", "content": response})
+        session.token_usage += response_tokens
+        return {
+            "content": response,
+            "tokens": response_tokens,
+            "prompt_tokens": prompt_tokens,
+            "thread_id": thread_id,
+            "mode": "offline",
+        }
 
     def _maybe_build_langchain_agent(self):
-        """Student TODO: optionally wire `create_agent` + `InMemorySaver` here.
+        """Build the configured chat model when credentials are available."""
 
-        Use `build_chat_model(self.config.model)` so the baseline can run with any supported provider.
-        """
+        provider = self.config.model.provider
+        if provider != "ollama" and not self.config.model.api_key:
+            return None
+        return build_chat_model(self.config.model)
 
-        raise NotImplementedError
+    def _reply_live(self, thread_id: str, message: str) -> dict[str, Any]:
+        session = self.sessions.setdefault(thread_id, SessionState())
+        session.messages.append({"role": "user", "content": message})
+        prompt_tokens = _message_tokens(session.messages)
+        session.prompt_tokens_processed += prompt_tokens
+
+        result = self.langchain_agent.invoke(session.messages)
+        response = _model_content(result)
+        response_tokens = estimate_tokens(response)
+        session.messages.append({"role": "assistant", "content": response})
+        session.token_usage += response_tokens
+        return {
+            "content": response,
+            "tokens": response_tokens,
+            "prompt_tokens": prompt_tokens,
+            "thread_id": thread_id,
+            "mode": "live",
+        }
+
+
+def _session_facts(messages: list[dict[str, str]]) -> dict[str, str]:
+    facts: dict[str, str] = {}
+    for item in messages:
+        if item.get("role") != "user":
+            continue
+        updates = extract_profile_updates(item.get("content", ""))
+        for key, value in updates.items():
+            if key == "technical_interests" and facts.get(key):
+                existing = [part.strip() for part in facts[key].split(",")]
+                additions = [part.strip() for part in value.split(",")]
+                facts[key] = ", ".join(dict.fromkeys(existing + additions))
+            else:
+                facts[key] = value
+    return facts
+
+
+def _message_tokens(messages: list[dict[str, str]]) -> int:
+    text = "\n".join(f"{item['role']}: {item['content']}" for item in messages)
+    return estimate_tokens(text)
+
+
+def _model_content(result: Any) -> str:
+    content = getattr(result, "content", result)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and "text" in item:
+                parts.append(str(item["text"]))
+        return "\n".join(parts)
+    return str(content)

@@ -35,7 +35,7 @@ Sau khi hoàn thành, các bạn cần có khả năng:
 ├── data/            # dữ liệu benchmark dùng chung
 │   ├── conversations.json
 │   └── advanced_long_context.json
-└── src/             # bản scaffold dành cho sinh viên (pseudocode + TODO)
+└── src/             # triển khai agent, memory layer, benchmark và test
     ├── model_provider.py
     ├── config.py
     ├── memory_store.py
@@ -51,15 +51,15 @@ Khi chạy, agent sẽ ghi trạng thái (ví dụ `state/profiles/<user>/User.m
 
 Các file được liệt kê theo thứ tự nên triển khai:
 
-| File | Vai trò | Thành phần chính |
-|---|---|---|
-| `model_provider.py` | Khởi tạo chat model cho từng provider | `ProviderConfig`, `normalize_provider()`, `build_chat_model()` |
-| `config.py` | Cấu hình chung của lab | `LabConfig` (đường dẫn, ngưỡng compact, model chính + judge), `load_config()` |
-| `memory_store.py` | Lõi memory layer | `estimate_tokens()`, `UserProfileStore` (read/write/edit `User.md`), `extract_profile_updates()`, `summarize_messages()`, `CompactMemoryManager` |
-| `agent_baseline.py` | Agent A: chỉ nhớ trong cùng thread | `BaselineAgent.reply()`, `token_usage()`, `prompt_token_usage()` |
-| `agent_advanced.py` | Agent B: short-term + `User.md` + compact | `AdvancedAgent.reply()`, `_reply_offline()`, `_estimate_prompt_context_tokens()`, `_offline_response()` |
-| `benchmark.py` | So sánh hai agent trên hai bộ dữ liệu | `run_agent_benchmark()`, `recall_points()`, `heuristic_quality()`, `format_rows()` |
-| `test_agents.py` | Kiểm chứng hành vi memory | test `User.md`, compact trigger, cross-session recall, giảm prompt load |
+| File                | Vai trò                                  | Thành phần chính                                                                                                                                 |
+| ------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `model_provider.py` | Khởi tạo chat model cho từng provider    | `ProviderConfig`, `normalize_provider()`, `build_chat_model()`                                                                                   |
+| `config.py`         | Cấu hình chung của lab                   | `LabConfig` (đường dẫn, ngưỡng compact, model chính + judge), `load_config()`                                                                    |
+| `memory_store.py`   | Lõi memory layer                         | `estimate_tokens()`, `UserProfileStore` (read/write/edit `User.md`), `extract_profile_updates()`, `summarize_messages()`, `CompactMemoryManager` |
+| `agent_baseline.py` | Agent A: chỉ nhớ trong cùng thread       | `BaselineAgent.reply()`, `token_usage()`, `prompt_token_usage()`                                                                                 |
+| `agent_advanced.py` | Agent B: short-term +`User.md` + compact | `AdvancedAgent.reply()`, `_reply_offline()`, `_estimate_prompt_context_tokens()`, `_offline_response()`                                          |
+| `benchmark.py`      | So sánh hai agent trên hai bộ dữ liệu    | `run_agent_benchmark()`, `recall_points()`, `heuristic_quality()`, `format_rows()`                                                               |
+| `test_agents.py`    | Kiểm chứng hành vi memory                | test`User.md`, compact trigger, cross-session recall, giảm prompt load                                                                           |
 
 ### Luồng xử lý một lượt của Advanced Agent
 
@@ -78,10 +78,10 @@ Cả hai agent nên có **chế độ offline** cho ra kết quả lặp lại �
 
 ## Dữ liệu benchmark
 
-| File | Nội dung | Mục tiêu |
-|---|---|---|
-| `data/conversations.json` | 10 hội thoại khoảng 10 lượt, user `dungct`, kèm `recall_questions` | Standard benchmark: đo recall qua nhiều phiên bình thường |
-| `data/advanced_long_context.json` | 1 hội thoại 16 lượt rất dài, user `dungct_stress` | Long-context stress benchmark: ép compact xảy ra nhiều lần |
+| File                              | Nội dung                                                          | Mục tiêu                                                   |
+| --------------------------------- | ----------------------------------------------------------------- | ---------------------------------------------------------- |
+| `data/conversations.json`         | 10 hội thoại khoảng 10 lượt, user`dungct`, kèm `recall_questions` | Standard benchmark: đo recall qua nhiều phiên bình thường  |
+| `data/advanced_long_context.json` | 1 hội thoại 16 lượt rất dài, user`dungct_stress`                  | Long-context stress benchmark: ép compact xảy ra nhiều lần |
 
 Mỗi hội thoại có dạng:
 
@@ -151,6 +151,23 @@ LLM_MODEL=gpt-4o-mini
 OPENAI_API_KEY=...
 ```
 
+### Cấu hình Gemini và Anthropic qua MWAPI
+
+Repo này mặc định hỗ trợ MWAPI như một endpoint OpenAI-compatible. Gemini được dùng làm model chính và Anthropic làm judge model. Copy `.env.example` thành `.env`, sau đó điền API key và sửa model ID theo đúng tên hiển thị trong tài khoản MWAPI:
+
+```env
+MWAPI_API_KEY=...
+MWAPI_BASE_URL=https://api.mwapi.dev/v1
+
+LLM_PROVIDER=custom
+LLM_MODEL=gemini-2.5-flash
+
+JUDGE_PROVIDER=custom
+JUDGE_MODEL=claude-sonnet-4-5
+```
+
+Không commit `.env`. Offline test và benchmark không gọi MWAPI; chúng vẫn chạy khi chưa có API key.
+
 ## Chạy benchmark và test
 
 Sau khi hoàn thiện `src/`, chạy từ root repo:
@@ -169,12 +186,12 @@ Benchmark cần in ra hai bảng: **Standard Benchmark** và **Long-Context Stre
 
 Nếu các bạn là sinh viên:
 
-- làm bài trong `src/`
+- đọc và mở rộng phần triển khai trong `src/`
 - dùng `data/` làm benchmark input
 
 Nếu các bạn là giảng viên hoặc reviewer:
 
-- dùng `src/` để đánh giá scaffold giao cho sinh viên và kết quả hoàn thiện cuối cùng
+- dùng `src/`, test và hai bảng benchmark để đánh giá kết quả hoàn thiện
 
 ## Tài liệu nên đọc tiếp
 
